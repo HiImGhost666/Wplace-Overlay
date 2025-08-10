@@ -1,539 +1,479 @@
-// WPlace Overlay — FIXED FULL VERSION
-// Host this file and use via bookmarklet:
-// javascript:fetch("https://yourhost.com/wplace-overlay-fixed.js").then(r=>r.text()).then(eval);
+// == WPlace Auto-Image (map-anchored, fixed) ==
+// Save as Auto-Image.js and host raw. Use bookmarklet:
+// javascript:fetch("https://yourhost.com/Auto-Image.js").then(r=>r.text()).then(eval);
 
-(() => {
-  // -------------------------
-  // CONFIG / DEFAULTS
-  // -------------------------
+(async () => {
+  /* ---------------------------------------------------------------------------
+     CONFIG
+  --------------------------------------------------------------------------- */
   const CONFIG = {
-    LOCAL_KEY: 'wplace_overlay_v3',
-    TRANSPARENCY_THRESHOLD: 10,
+    COOLDOWN_DEFAULT: 31000,
+    TRANSPARENCY_THRESHOLD: 100,
     WHITE_THRESHOLD: 250,
-    DEFAULT_TILE_SIZE: 4,        // default onscreen pixels per WPlace pixel (adjustable)
-    PALETTE_DETECT_INTERVAL_MS: 1200,
+    LOG_INTERVAL: 10,
+    LOCAL_KEY: 'wplace_overlay_v4',
+    // The overlay will try to attach to one of these candidate panes (map layers)
+    MAP_CONTAINER_SELECTORS: [
+      '.leaflet-zoom-animated',       // Leaflet panes
+      '.leaflet-map-pane',            // other Leaflet containers
+      '.mapboxgl-canvas-container',   // Mapbox GL
+      '.mapboxgl-viewport',           // Mapbox viewport
+      '.gm-style',                    // Google Maps container
+      '#map',                         // common id
+      '.map-root',                    // fallback
+      'body'                          // ultimate fallback, will still work but won't auto-zoom
+    ],
     THEME: {
-      panelBg: "#0f1720",
-      accent: "#7c3aed",
-      text: "#e6eef8",
-      subtext: "#9aa7bf"
+      primary: '#0b0b0d',
+      panel: '#0f1720',
+      accent: '#6d28d9',
+      text: '#e6eef8',
+      subtext: '#9aa7bf',
+      success: '#10b981',
+      error: '#ef4444'
+    },
+    PALETTE_DETECT_INTERVAL_MS: 2000
+  };
+
+  /* ---------------------------------------------------------------------------
+     TEXTS
+  --------------------------------------------------------------------------- */
+  const TEXTS = {
+    en: {
+      title: 'WPlace Auto-Image (anchored)',
+      initBot: 'Init',
+      uploadImage: 'Upload Image',
+      resizeImage: 'Resize',
+      selectPosition: 'Select Position',
+      startPainting: 'Start Painting',
+      stopPainting: 'Stop',
+      checkingColors: '🔍 Checking available colors...',
+      noColorsFound: '❌ Open the color palette and try Detect!',
+      colorsFound: '✅ {count} palette colors found',
+      loadingImage: '🖼️ Loading image...',
+      imageLoaded: '✅ Image processed: {count} pixels',
+      imageError: '❌ Error loading image',
+      selectPositionAlert: 'Click the tile on map where image top-left should be (in edit mode)',
+      waitingPosition: '👆 Waiting for position click...',
+      positionSet: '✅ Position set',
+      positionTimeout: '❌ Timeout selecting position',
+      startPaintingMsg: '🎨 Ready — use map to paint manually (click a pixel to select color).',
+      paintingProgress: '🧱 Progress: {painted}/{total}',
+      noCharges: '⌛ No charges. Waiting {time}...',
+      paintingStopped: '⏹️ Stopped',
+      paintingComplete: '✅ Complete {count} pixels',
+      missingRequirements: '❌ Upload image and set position first',
+      initMessage: 'Click Init, then open color palette and Detect Palette',
+      waitingInit: 'Waiting for init...',
+      resizeSuccess: '✅ Image resized to {width}x{height}',
+      paintingPaused: '⏸️ Paused at X:{x}, Y:{y}'
     }
   };
 
-  // Built-in fallback palette (kept for reliability)
-  const FALLBACK_PALETTE = [
-    { id: 1, name: "Black",        rgb: [0,0,0] },
-    { id: 2, name: "Dark Gray",    rgb: [60,60,60] },
-    { id: 3, name: "Gray",         rgb: [120,120,120] },
-    { id: 4, name: "Light Gray",   rgb: [210,210,210] },
-    { id: 5, name: "White",        rgb: [255,255,255] },
-    { id: 6, name: "Deep Red",     rgb: [96,0,24] },
-    { id: 7, name: "Red",          rgb: [237,28,36] },
-    { id: 8, name: "Orange",       rgb: [255,127,39] },
-    { id: 9, name: "Gold",         rgb: [246,170,9] },
-    { id:10, name: "Yellow",       rgb: [249,221,59] },
-    { id:11, name: "Light Yellow", rgb: [255,250,188] },
-    { id:12, name: "Dark Green",   rgb: [14,185,104] },
-    { id:13, name: "Green",        rgb: [19,230,123] },
-    { id:14, name: "Light Green",  rgb: [135,255,94] },
-    { id:15, name: "Dark Teal",    rgb: [12,129,110] },
-    { id:16, name: "Teal",         rgb: [16,174,166] },
-    { id:17, name: "Light Teal",   rgb: [19,225,190] },
-    { id:18, name: "Dark Blue",    rgb: [40,80,158] },
-    { id:19, name: "Blue",         rgb: [64,147,228] },
-    { id:20, name: "Cyan",         rgb: [96,247,242] },
-    { id:21, name: "Indigo",       rgb: [107,80,246] },
-    { id:22, name: "Light Indigo", rgb: [153,177,251] },
-    { id:23, name: "Dark Purple",  rgb: [120,12,153] },
-    { id:24, name: "Purple",       rgb: [170,56,185] },
-    { id:25, name: "Light Purple", rgb: [224,159,249] },
-    { id:26, name: "Dark Pink",    rgb: [203,0,122] },
-    { id:27, name: "Pink",         rgb: [236,31,128] },
-    { id:28, name: "Light Pink",   rgb: [243,141,169] },
-    { id:29, name: "Dark Brown",   rgb: [104,70,52] },
-    { id:30, name: "Brown",        rgb: [149,104,42] },
-    { id:31, name: "Beige",        rgb: [248,178,119] }
-  ];
-
-  // -------------------------
-  // APP STATE
-  // -------------------------
+  /* ---------------------------------------------------------------------------
+     STATE
+  --------------------------------------------------------------------------- */
   const state = {
+    language: 'en',
     overlayCanvas: null,
     overlayCtx: null,
-    pixels: [],           // array of {x,y,r,g,b,paletteId,paletteName,done}
-    gridW: 0, gridH: 0,   // pixel grid size (in WPlace pixels)
-    tileSize: CONFIG.DEFAULT_TILE_SIZE, // screen px per grid cell
-    pos: { x: 100, y: 100 },
+    mapContainer: null,       // DOM element we attach overlay to (map pane)
+    mapIsTransformed: false,  // whether map uses transforms to zoom (most do)
+    palette: [],              // array {id, name, rgb:[r,g,b]}
+    paletteDetected: false,
+    image: null,              // last uploaded Image element
+    imageSrcUrl: null,
+    gridW: 0,
+    gridH: 0,
+    tileSize: 4,              // on-screen pixels per WPlace pixel (editable)
+    pos: { x: 0, y: 0 },      // top-left position in *map local pixels* (not screen)
+    pixels: [],               // array of {x,y,r,g,b,paletteId,paletteName,done}
     editMode: false,
     gridVisible: true,
     locked: false,
-    lastImageObj: null,   // HTMLImageElement of last uploaded image
-    lastImageSrc: null,   // object URL for last uploaded image (for reference)
-    palette: [],          // dynamic palette loaded from page (array of {id,name,rgb})
-    paletteDetected: false
+    selectingPosition: false,
+    startPositionSet: false,
+    startRegion: null,
+    lastPosition: { x: 0, y: 0 },
+    minimized: false,
+    savedSettings: null,
+    imageLoaded: false
   };
 
-  // -------------------------
-  // UTILS
-  // -------------------------
+  /* ---------------------------------------------------------------------------
+     UTILS
+  --------------------------------------------------------------------------- */
   const Utils = {
-    distanceSq: (a,b) => (a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2,
-    findClosestPalette: (rgb) => {
-      let best = { id: null, name: null, dist: Infinity, rgb: null };
-      const pal = (state.palette && state.palette.length) ? state.palette : FALLBACK_PALETTE;
-      for (const p of pal) {
-        const d = Utils.distanceSq(rgb, p.rgb);
-        if (d < best.dist) best = { id: p.id, name: p.name, dist: d, rgb: p.rgb };
-      }
-      return best;
+    sleep: ms => new Promise(r => setTimeout(r, ms)),
+    clamp: (v, a, b) => Math.max(a, Math.min(b, v)),
+    colorDistance: (a, b) => Math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2),
+    t: (k, params={}) => {
+      let s = TEXTS[state.language][k] || TEXTS.en[k] || k;
+      Object.entries(params).forEach(([kk,v]) => s = s.replace(`{${kk}}`, v));
+      return s;
     },
-    pixelateImageToGrid: (img, targetW, targetH) => {
-      // Nearest-neighbor resample: draw into a new canvas of targetW x targetH with imageSmoothing disabled
-      const tmp = document.createElement('canvas');
-      tmp.width = targetW;
-      tmp.height = targetH;
-      const tctx = tmp.getContext('2d');
-      tctx.imageSmoothingEnabled = false;
-      tctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, 0, 0, targetW, targetH);
-      return tctx.getImageData(0,0,targetW,targetH);
+    showTip: (msg, ms=1600) => {
+      const tip = document.getElementById('wpa-tip');
+      if (!tip) return;
+      tip.textContent = msg;
+      tip.style.display = 'block';
+      clearTimeout(tip._t);
+      tip._t = setTimeout(()=> tip.style.display='none', ms);
     },
+    createImageUploader: () => new Promise(resolve => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/png,image/jpeg';
+      input.onchange = () => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result);
+        fr.readAsDataURL(input.files[0]);
+      };
+      input.click();
+    }),
     saveLocal: () => {
       try {
-        const save = {
-          pos: state.pos,
+        const saved = {
+          gridW: state.gridW, gridH: state.gridH,
           tileSize: state.tileSize,
-          gridW: state.gridW,
-          gridH: state.gridH,
+          pos: state.pos,
           gridVisible: state.gridVisible,
           locked: state.locked,
-          editMode: state.editMode,
           pixelsDone: state.pixels.map(p => !!p.done),
-          lastImageSrc: state.lastImageSrc
+          imageSrcUrl: state.imageSrcUrl
         };
-        localStorage.setItem(CONFIG.LOCAL_KEY, JSON.stringify(save));
-      } catch (e) { console.warn('WPO save failed', e); }
+        localStorage.setItem(CONFIG.LOCAL_KEY, JSON.stringify(saved));
+      } catch(e){ console.warn('save failed', e); }
     },
     loadLocal: () => {
       try {
         const raw = localStorage.getItem(CONFIG.LOCAL_KEY);
-        if (!raw) return;
-        const parsed = JSON.parse(raw);
-        if (parsed.pos) state.pos = parsed.pos;
-        if (parsed.tileSize) state.tileSize = parsed.tileSize;
-        if (parsed.gridW) state.gridW = parsed.gridW;
-        if (parsed.gridH) state.gridH = parsed.gridH;
-        if (typeof parsed.gridVisible === 'boolean') state.gridVisible = parsed.gridVisible;
-        if (typeof parsed.locked === 'boolean') state.locked = parsed.locked;
-        if (typeof parsed.editMode === 'boolean') state.editMode = parsed.editMode;
-        if (parsed.lastImageSrc) state.lastImageSrc = parsed.lastImageSrc;
-        // pixelsDone will be restored only after pixels are built (matching length)
-        return parsed;
-      } catch (e) { console.warn('WPO load failed', e); }
+        if (!raw) return null;
+        return JSON.parse(raw);
+      } catch(e) { console.warn('load failed', e); return null; }
+    },
+    // pixelate nearest-neighbor to target grid size
+    pixelateImageToGrid: (img, targetW, targetH) => {
+      const tmp = document.createElement('canvas');
+      tmp.width = targetW;
+      tmp.height = targetH;
+      const ctx = tmp.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, 0, 0, targetW, targetH);
+      return ctx.getImageData(0,0,targetW,targetH);
     }
   };
 
-  // -------------------------
-  // STYLES
-  // -------------------------
-  (function injectStyles(){
-    const s = document.createElement('style');
-    s.textContent = `
-      #wpo-panel { position:fixed; right:18px; top:18px; width:330px; z-index:100001;
-        background: linear-gradient(180deg, ${CONFIG.THEME.panelBg}, #071022);
-        color:${CONFIG.THEME.text}; border-radius:12px; padding:12px; box-shadow:0 10px 30px rgba(2,6,23,0.6);
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
-        border: 1px solid rgba(255,255,255,0.03);
-      }
-      #wpo-panel h4 { margin:0 0 8px 0; font-size:15px; color:${CONFIG.THEME.accent}; display:flex;align-items:center; gap:8px }
-      .wpo-row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
-      .wpo-btn { flex:1; padding:8px 10px; border-radius:8px; border:none; cursor:pointer;
-         background: rgba(255,255,255,0.03); color:${CONFIG.THEME.text}; font-weight:600; font-size:13px;
-      }
-      .wpo-btn.primary { background: linear-gradient(90deg, ${CONFIG.THEME.accent}, #4c1d95); color:#fff; }
-      .wpo-small { padding:6px 8px; font-size:12px; border-radius:6px; }
-      .wpo-label { font-size:12px; color:${CONFIG.THEME.subtext}; }
-      .wpo-input { width:85px; padding:6px; border-radius:8px; background:rgba(255,255,255,0.02); color:${CONFIG.THEME.text}; border:1px solid rgba(255,255,255,0.03); }
-      #wpo-progress-bar { height:10px; background:rgba(255,255,255,0.06); border-radius:999px; overflow:hidden; margin-top:8px }
-      #wpo-progress-bar > div { height:100%; background: linear-gradient(90deg, ${CONFIG.THEME.accent}, #a78bfa); width:0% }
-      #wpo-footer { font-size:12px; color:${CONFIG.THEME.subtext}; margin-top:8px; display:flex; justify-content:space-between; align-items:center }
-      #wpo-toggle-box { width:36px; height:20px; border-radius:999px; background:rgba(255,255,255,0.06); padding:3px; cursor:pointer; display:inline-flex; align-items:center; }
-      #wpo-toggle-knob { width:14px; height:14px; border-radius:999px; background:#fff; transform:translateX(0); transition:transform 0.15s; }
-      .wpo-toggle-on { background: linear-gradient(90deg, ${CONFIG.THEME.accent}, #a78bfa) !important; }
-      #wpo-overlay-canvas { position:fixed; top:0; left:0; z-index:100000; pointer-events:none; }
-      #wpo-tip { position:fixed; z-index:100002; padding:6px 8px; background:rgba(7,10,15,0.9); color:#fff; border-radius:6px; font-size:12px; display:none; white-space:nowrap; }
-      #wpo-help-ul { font-size:12px; color:${CONFIG.THEME.subtext}; margin:6px 0 0 0; padding-left:16px; }
-    `;
-    document.head.appendChild(s);
-  })();
-
-  // -------------------------
-  // PANEL BUILD
-  // -------------------------
-  function buildPanel() {
-    const existing = document.getElementById('wpo-panel');
-    if (existing) existing.remove();
-
-    const panel = document.createElement('div');
-    panel.id = 'wpo-panel';
-    panel.innerHTML = `
-      <h4>🔳 WPlace Overlay — Fixed</h4>
-
-      <div class="wpo-row">
-        <button id="wpo-upload" class="wpo-btn primary">Upload Image</button>
-        <button id="wpo-detect" class="wpo-btn wpo-small">Detect Palette</button>
-      </div>
-
-      <div class="wpo-row">
-        <div style="flex:1">
-          <div class="wpo-label">Grid size (W × H)</div>
-          <div style="display:flex; gap:6px; margin-top:6px;">
-            <input id="wpo-gridW" class="wpo-input" type="number" min="1" value="${state.gridW||0}" placeholder="width" />
-            <input id="wpo-gridH" class="wpo-input" type="number" min="1" value="${state.gridH||0}" placeholder="height" />
-            <button id="wpo-autoset" class="wpo-btn wpo-small">Auto</button>
-          </div>
-          <div id="wpo-small-note" class="wpo-label">If left 0, autoset uses image natural pixel dimensions.</div>
-        </div>
-      </div>
-
-      <div class="wpo-row">
-        <div style="flex:1">
-          <div class="wpo-label">Tile size (screen px)</div>
-          <input id="wpo-scale" class="wpo-input" type="number" min="1" value="${state.tileSize}" />
-        </div>
-        <div style="display:flex;flex-direction:column;gap:6px;">
-          <button id="wpo-edit" class="wpo-btn wpo-small">Edit Mode</button>
-          <button id="wpo-lock" class="wpo-btn wpo-small">Lock</button>
-        </div>
-      </div>
-
-      <div class="wpo-row">
-        <button id="wpo-grid-toggle" class="wpo-btn wpo-small">Grid: ${state.gridVisible ? 'On' : 'Off'}</button>
-        <button id="wpo-reset" class="wpo-btn wpo-small">Reset Progress</button>
-      </div>
-
-      <div>
-        <div class="wpo-label">Progress</div>
-        <div id="wpo-progress-bar"><div style="width:0%"></div></div>
-        <div id="wpo-progress-text" style="margin-top:6px; font-size:12px; color:${CONFIG.THEME.subtext}">0 / 0</div>
-      </div>
-
-      <div id="wpo-footer">
-        <div class="wpo-label">Edit Mode</div>
-        <div id="wpo-toggle-box"><div id="wpo-toggle-knob"></div></div>
-      </div>
-
-      <div style="margin-top:8px">
-        <div class="wpo-row"><button id="wpo-move-handle" class="wpo-btn wpo-small">Move Overlay</button><button id="wpo-help" class="wpo-btn wpo-small">Help</button></div>
-        <ul id="wpo-help-ul" style="display:none;">
-          <li>Upload an image (pixel art works best).</li>
-          <li>Set grid size to target WPlace pixels (Auto sets it to image size).</li>
-          <li>Tile size controls how big each WPlace pixel appears on screen; adjust to match the site.</li>
-          <li>Toggle Edit Mode to place pixels (canvas intercepts clicks only in Edit Mode).</li>
-          <li>Click a pixel in Edit Mode — script will select the matching color in-site and mark it done.</li>
-        </ul>
-      </div>
-    `;
-    document.body.appendChild(panel);
-
-    // DOM hooks
-    document.getElementById('wpo-upload').onclick = uploadClick;
-    document.getElementById('wpo-detect').onclick = detectPaletteNow;
-    document.getElementById('wpo-autoset').onclick = () => {
-      if (!state.lastImageObj) { showTip('Upload an image first'); return; }
-      document.getElementById('wpo-gridW').value = state.lastImageObj.naturalWidth;
-      document.getElementById('wpo-gridH').value = state.lastImageObj.naturalHeight;
-      // auto reprocess if last image exists
-      processLastImageWithInputs();
-    };
-    document.getElementById('wpo-gridW').onchange = () => processLastImageWithInputs();
-    document.getElementById('wpo-gridH').onchange = () => processLastImageWithInputs();
-    document.getElementById('wpo-scale').onchange = () => {
-      const v = Math.max(1, parseInt(document.getElementById('wpo-scale').value) || CONFIG.DEFAULT_TILE_SIZE);
-      state.tileSize = v; Utils.saveLocal(); drawOverlay();
-    };
-    document.getElementById('wpo-edit').onclick = () => { state.editMode = !state.editMode; updateEditUI(); Utils.saveLocal(); };
-    document.getElementById('wpo-lock').onclick = () => { state.locked = !state.locked; document.getElementById('wpo-lock').textContent = state.locked ? 'Locked' : 'Lock'; Utils.saveLocal(); };
-    document.getElementById('wpo-grid-toggle').onclick = () => { state.gridVisible = !state.gridVisible; document.getElementById('wpo-grid-toggle').textContent = `Grid: ${state.gridVisible ? 'On' : 'Off'}`; Utils.saveLocal(); drawOverlay(); };
-    document.getElementById('wpo-reset').onclick = () => { if (!confirm('Reset progress? This will unmark placed pixels.')) return; state.pixels.forEach(p=>p.done=false); Utils.saveLocal(); drawOverlay(); updateProgressUI(); };
-    document.getElementById('wpo-toggle-box').onclick = () => { state.editMode = !state.editMode; updateEditUI(); Utils.saveLocal(); };
-    document.getElementById('wpo-move-handle').onmousedown = (e) => startOverlayMove(e);
-    document.getElementById('wpo-help').onclick = () => {
-      const ul = document.getElementById('wpo-help-ul');
-      ul.style.display = ul.style.display === 'none' ? 'block' : 'none';
-    };
-
-    updateEditUI();
-    updateProgressUI();
-  }
-
-  // -------------------------
-  // TIP / HINT AREA
-  // -------------------------
-  const tip = document.createElement('div');
-  tip.id = 'wpo-tip';
-  document.body.appendChild(tip);
-  function showTip(text, ms = 1400) {
-    tip.textContent = text;
-    tip.style.left = (window.innerWidth/2 - 160) + 'px';
-    tip.style.top = '72px';
-    tip.style.display = 'block';
-    clearTimeout(tip._t);
-    tip._t = setTimeout(()=> tip.style.display = 'none', ms);
-  }
-
-  // -------------------------
-  // OVERLAY CANVAS
-  // -------------------------
-  function createOverlayCanvas() {
-    if (state.overlayCanvas) return;
-    const c = document.createElement('canvas');
-    c.id = 'wpo-overlay-canvas';
-    c.width = window.innerWidth;
-    c.height = window.innerHeight;
-    c.style.pointerEvents = 'none'; // only enable when editMode true
-    document.body.appendChild(c);
-    state.overlayCanvas = c;
-    state.overlayCtx = c.getContext('2d');
-
-    // responsive
-    window.addEventListener('resize', () => {
-      c.width = window.innerWidth;
-      c.height = window.innerHeight;
-      drawOverlay();
-    });
-
-    // interactions WHEN editMode enabled (pointer-events toggled)
-    c.addEventListener('mousedown', (ev) => {
-      if (!state.editMode) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      // shift + click -> start overlay drag (fallback)
-      if (!state.locked && ev.shiftKey) {
-        state._draggingOverlay = true;
-        state._dragOffset = { x: ev.clientX - state.pos.x, y: ev.clientY - state.pos.y };
-        return;
-      }
-      const m = mapMouseToGrid(ev.clientX, ev.clientY);
-      handlePixelClickAt(m.gridX, m.gridY, ev);
-    });
-
-    window.addEventListener('mouseup', () => {
-      state._draggingOverlay = false;
-      state._dragOffset = null;
-    });
-    window.addEventListener('mousemove', (ev) => {
-      if (!state.editMode) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (state._draggingOverlay && !state.locked) {
-        state.pos.x = ev.clientX - state._dragOffset.x;
-        state.pos.y = ev.clientY - state._dragOffset.y;
-        Utils.saveLocal();
-        drawOverlay();
-        return;
-      }
-      const m = mapMouseToGrid(ev.clientX, ev.clientY);
-      handleHover(m.gridX, m.gridY, ev.clientX, ev.clientY);
-    });
-  }
-
-  function mapMouseToGrid(clientX, clientY) {
-    const gx = Math.floor((clientX - state.pos.x) / state.tileSize);
-    const gy = Math.floor((clientY - state.pos.y) / state.tileSize);
-    return { gridX: gx, gridY: gy };
-  }
-
-  // -------------------------
-  // PALETTE DETECTION
-  // -------------------------
-  let paletteDetectTimer = null;
-  function detectPaletteNow() {
-    // attempt immediate detection
-    const p = extractPaletteFromPage();
-    if (p && p.length) {
-      state.palette = p;
-      state.paletteDetected = true;
-      showTip(`Palette detected (${p.length} colors)`, 1400);
-      return true;
-    } else {
-      showTip('Palette not found — trying periodically (open palette in site UI).', 2200);
-      // start periodic attempts
-      if (paletteDetectTimer) clearInterval(paletteDetectTimer);
-      paletteDetectTimer = setInterval(() => {
-        const res = extractPaletteFromPage();
-        if (res && res.length) {
-          clearInterval(paletteDetectTimer);
-          state.palette = res;
-          state.paletteDetected = true;
-          showTip(`Palette detected (${res.length} colors)`, 1400);
-        }
-      }, CONFIG.PALETTE_DETECT_INTERVAL_MS);
-      return false;
-    }
-  }
-
+  /* ---------------------------------------------------------------------------
+     PALETTE DETECTION
+     - dynamic detection from page. looks for: [id^="color-"] OR .btn with background
+  --------------------------------------------------------------------------- */
   function extractPaletteFromPage() {
-    // Strategy: look for elements with id starting with "color-" (button container)
-    // Common markup used earlier: <button ... id="color-7" style="background: rgb(237, 28, 36);">
-    // We'll find elements with id that match /^color-\d+$/ and then read style.backgroundColor or computed style
     try {
-      const nodes = Array.from(document.querySelectorAll('[id^="color-"]'));
+      const nodes = Array.from(document.querySelectorAll('[id^="color-"], .btn[style], .color-swatch, button[aria-label]'));
       const entries = [];
       for (const n of nodes) {
-        const match = n.id.match(/^color-(\d+)$/);
-        if (!match) continue;
-        const id = parseInt(match[1]);
-        // find RGB from inline style or computed style
+        // try id pattern color-N
+        let id = null;
+        const m = n.id && n.id.match(/^color-(\d+)$/);
+        if (m) id = parseInt(m[1]);
+
+        // find element that holds background color (n or a child)
+        const btn = (n.tagName.toLowerCase()==='button') ? n : (n.querySelector('button') || n);
+        // read inline or computed background
         let rgb = null;
-        // element might be the button OR a wrapper; check the element and any button inside
-        const btn = (n.tagName.toLowerCase() === 'button') ? n : n.querySelector('button') || n;
-        const inline = btn.style.backgroundColor || btn.style.background || n.style.backgroundColor || n.style.background;
+        const inline = btn && (btn.style.background || btn.style.backgroundColor);
         if (inline) {
-          // inline might be 'rgb(r, g, b)'
-          const m = inline.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-          if (m) rgb = [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
+          const mm = inline.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+          if (mm) rgb = [parseInt(mm[1]),parseInt(mm[2]),parseInt(mm[3])];
         }
-        if (!rgb) {
-          // computed style
-          const comp = window.getComputedStyle(btn);
-          const b = comp.backgroundColor || comp.background;
-          const m = (b && b.match) ? b.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/) : null;
-          if (m) rgb = [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
+        if (!rgb && btn) {
+          const cs = window.getComputedStyle(btn);
+          const b = cs.backgroundColor || cs.background;
+          const mm = b && b.match ? b.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/) : null;
+          if (mm) rgb = [parseInt(mm[1]),parseInt(mm[2]),parseInt(mm[3])];
         }
-        if (!rgb) {
-          // fallback: some colors are shown as background-image (checkerboard) for transparent; skip those
-          continue;
-        }
-        entries.push({ id, name: btn.getAttribute('aria-label') || btn.title || `color-${id}`, rgb });
+        if (!rgb) continue; // skip if no color
+        const name = (btn && ((btn.getAttribute && btn.getAttribute('aria-label')) || btn.title)) || `color-${id||entries.length+1}`;
+        entries.push({ id: id === null ? entries.length+1 : id, name, rgb });
       }
-      // sort by id ascending and return unique
+      // dedupe & sort ascending
       const uniq = {};
       for (const e of entries) uniq[e.id] = e;
-      const result = Object.values(uniq).sort((a,b)=>a.id-b.id);
-      return result;
+      const out = Object.values(uniq).sort((a,b)=>a.id-b.id);
+      return out;
     } catch (e) {
       console.warn('palette extract error', e);
       return null;
     }
   }
 
-  // Start automatic palette detection on load
-  detectPaletteNow();
-
-  // -------------------------
-  // IMAGE UPLOAD / PROCESS
-  // -------------------------
-  function uploadClick() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/png,image/jpeg';
-    input.onchange = () => {
-      const file = input.files[0];
-      if (!file) return;
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => {
-        state.lastImageObj = img;
-        state.lastImageSrc = url;
-        processLastImageWithInputs();
-      };
-      img.onerror = () => {
-        showTip('Image load failed');
-        URL.revokeObjectURL(url);
-      };
-      img.src = url;
-    };
-    input.click();
+  async function detectPalette(retry=true) {
+    const p = extractPaletteFromPage();
+    if (p && p.length > 0) {
+      state.palette = p;
+      state.paletteDetected = true;
+      Utils.showTip(Utils.t('colorsFound', {count: p.length}), 1600);
+      // reflect in UI maybe (not necessary)
+      return true;
+    } else {
+      if (retry) {
+        Utils.showTip(Utils.t('checkingColors'), 1200);
+        // try periodically for some time
+        let attempts = 0;
+        const interval = setInterval(() => {
+          attempts++;
+          const r = extractPaletteFromPage();
+          if (r && r.length) {
+            clearInterval(interval);
+            state.palette = r;
+            state.paletteDetected = true;
+            Utils.showTip(Utils.t('colorsFound', {count: r.length}), 1400);
+          } else if (attempts > 12) {
+            clearInterval(interval);
+            Utils.showTip(Utils.t('noColorsFound'), 2600);
+          }
+        }, CONFIG.PALETTE_DETECT_INTERVAL_MS);
+      } else {
+        Utils.showTip(Utils.t('noColorsFound'), 1600);
+      }
+      return false;
+    }
   }
 
-  // Reprocess the last uploaded image using current grid inputs
-  function processLastImageWithInputs() {
-    if (!state.lastImageObj) { showTip('Upload an image first'); return; }
-    // read inputs
-    const gw = parseInt(document.getElementById('wpo-gridW').value) || 0;
-    const gh = parseInt(document.getElementById('wpo-gridH').value) || 0;
-    const targetW = (gw > 0) ? gw : state.lastImageObj.naturalWidth;
-    const targetH = (gh > 0) ? gh : state.lastImageObj.naturalHeight;
-    // set grid dims
-    state.gridW = targetW;
-    state.gridH = targetH;
-    // pixelate
-    const idata = Utils.pixelateImageToGrid(state.lastImageObj, targetW, targetH);
-    buildPixelsFromImageData(idata, targetW, targetH);
-    // try restore done flags if saved before
-    tryRestoreDoneFlags();
-    Utils.saveLocal();
-    drawOverlay();
-    updateProgressUI();
-    showTip(`Image processed: ${targetW} x ${targetH}`, 1200);
+  function findClosestColorId(rgb) {
+    if (!state.palette || state.palette.length === 0) {
+      // fallback to built-in static palette if detection failed (from earlier file)
+      // small built-in mapping (ids 1..31)
+      const builtin = [
+        [0,0,0], [60,60,60],[120,120,120],[210,210,210],[255,255,255],
+        [96,0,24],[237,28,36],[255,127,39],[246,170,9],[249,221,59],
+        [255,250,188],[14,185,104],[19,230,123],[135,255,94],[12,129,110],
+        [16,174,166],[19,225,190],[40,80,158],[64,147,228],[96,247,242],
+        [107,80,246],[153,177,251],[120,12,153],[170,56,185],[224,159,249],
+        [203,0,122],[236,31,128],[243,141,169],[104,70,52],[149,104,42],[248,178,119]
+      ];
+      let best=0; let bd=Infinity;
+      for (let i=0;i<builtin.length;i++){
+        const d = Utils.colorDistance(rgb, builtin[i]);
+        if (d < bd) { bd = d; best = i+1; }
+      }
+      return best;
+    } else {
+      let bestIdx = 0; let bd = Infinity;
+      for (let i=0;i<state.palette.length;i++){
+        const p = state.palette[i];
+        const d = Utils.colorDistance(rgb, p.rgb);
+        if (d < bd) { bd = d; bestIdx = p.id; }
+      }
+      return bestIdx;
+    }
   }
 
-  function buildPixelsFromImageData(idata, w, h) {
-    const d = idata.data;
-    const pixels = [];
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const idx = (y * w + x) * 4;
-        const r = d[idx], g = d[idx+1], b = d[idx+2], a = d[idx+3];
-        if (a < CONFIG.TRANSPARENCY_THRESHOLD) continue; // skip transparent
-        if (r >= CONFIG.WHITE_THRESHOLD && g >= CONFIG.WHITE_THRESHOLD && b >= CONFIG.WHITE_THRESHOLD) continue; // skip near-white background
-        const pal = Utils.findClosestPalette([r,g,b]);
-        pixels.push({
-          x, y,
-          r, g, b,
-          paletteId: pal.id,
-          paletteName: pal.name,
-          done: false
-        });
+  /* ---------------------------------------------------------------------------
+     FIND MAP CONTAINER & ATTACH OVERLAY
+     Strategy:
+      - Try known selectors for map panes (Leaflet, Mapbox, Google, etc)
+      - If found, append overlay canvas as first child and set styles so it moves with transform
+      - If not found, fallback to body (overlay will be screen-anchored)
+     Note: We try to append the overlay to a transformed element so zoom/pan also affects overlay.
+  --------------------------------------------------------------------------- */
+  function findMapContainer() {
+    for (const sel of CONFIG.MAP_CONTAINER_SELECTORS) {
+      const el = document.querySelector(sel);
+      if (el) {
+        // prefer panes that are children of map root (avoid overlay panel)
+        return el;
       }
     }
-    state.pixels = pixels;
-    state.imageLoaded = pixels.length > 0;
+    return document.body;
   }
 
-  // try restore done flags saved earlier (called after build)
-  function tryRestoreDoneFlags() {
-    const raw = localStorage.getItem(CONFIG.LOCAL_KEY);
-    if (!raw) return;
+  function createOverlayCanvas() {
+    // if already created, noop
+    if (state.overlayCanvas) return;
+
+    // find map container and attach overlay inside it
+    const mapEl = findMapContainer();
+    state.mapContainer = mapEl;
+
+    const canvas = document.createElement('canvas');
+    canvas.id = 'wpa-overlay-canvas';
+    // if using map container (not body) make the canvas positioned absolute to that container
+    canvas.style.position = 'absolute';
+    canvas.style.left = '0px';
+    canvas.style.top = '0px';
+    canvas.style.width = `${mapEl.clientWidth}px`;
+    canvas.style.height = `${mapEl.clientHeight}px`;
+    canvas.style.pointerEvents = 'none'; // default: let map interactions through
+    canvas.style.zIndex = 99990;
+    // append to mapEl so it inherits transforms where possible
     try {
-      const parsed = JSON.parse(raw);
-      if (!parsed.pixelsDone) return;
-      if (Array.isArray(parsed.pixelsDone) && parsed.pixelsDone.length === state.pixels.length) {
-        for (let i = 0; i < parsed.pixelsDone.length; i++) state.pixels[i].done = !!parsed.pixelsDone[i];
+      mapEl.appendChild(canvas);
+    } catch(e) {
+      document.body.appendChild(canvas);
+    }
+    state.overlayCanvas = canvas;
+    state.overlayCtx = canvas.getContext('2d');
+
+    // set pixel backing store size for crispness
+    function resizeCanvasToContainer() {
+      const w = Math.max(1, state.mapContainer.clientWidth);
+      const h = Math.max(1, state.mapContainer.clientHeight);
+      // adjust backing store for device pixel ratio
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.round(w * ratio);
+      canvas.height = Math.round(h * ratio);
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+      const ctx = state.overlayCtx;
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      drawOverlay();
+    }
+    // initial size
+    resizeCanvasToContainer();
+
+    // watch container resize / map changes
+    const ro = new ResizeObserver(resizeCanvasToContainer);
+    ro.observe(state.mapContainer);
+
+    // listen to some typical map events (these are generic and not map-lib-specific)
+    window.addEventListener('wheel', () => requestAnimationFrame(drawOverlay), { passive: true });
+    window.addEventListener('mouseup', onPointerUp);
+    window.addEventListener('mousemove', onPointerMove);
+
+    // also observe DOM mutations (some libs change transforms)
+    const mo = new MutationObserver(() => requestAnimationFrame(drawOverlay));
+    mo.observe(state.mapContainer, { attributes: true, childList: true, subtree: true });
+
+    // interactions: enable pointer events only in editMode for canvas; but allow dragging by overlay itself:
+    canvas.addEventListener('mousedown', (ev) => {
+      if (!state.editMode) return;
+      ev.stopPropagation();
+      ev.preventDefault();
+      // check which grid pixel user clicked
+      const local = getLocalCoords(ev.clientX, ev.clientY);
+      const grid = screenToGrid(local.x, local.y);
+      // if user holds Shift OR move-mode, start move overlay drag instead of pixel click
+      if (!state.locked && (ev.shiftKey || state.moveOverlayDrag)) {
+        startOverlayDrag(ev);
+        return;
       }
-    } catch (e) { console.warn('restore flags fail', e); }
+      handlePixelClick(grid.gx, grid.gy, ev);
+    });
+
+    // double-click to toggle move mode (optional)
+    canvas.addEventListener('dblclick', (ev) => {
+      if (!state.editMode) return;
+      state.moveOverlayDrag = !state.moveOverlayDrag;
+      Utils.showTip(state.moveOverlayDrag ? 'Move overlay: ON (drag image)' : 'Move overlay: OFF', 900);
+    });
+
+    // store observers so we can disconnect later if needed
+    state._resizeObserver = ro;
+    state._mutationObserver = mo;
   }
 
-  // -------------------------
-  // DRAWING
-  // -------------------------
+  /* ---------------------------------------------------------------------------
+     COORDINATE HELPERS
+     - Because the overlay canvas is appended to the map container, we need to map
+       screen coordinates (clientX/Y) to canvas-local coordinates, then to grid coords.
+  --------------------------------------------------------------------------- */
+  function getLocalCoords(clientX, clientY) {
+    const rect = state.overlayCanvas.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }
+
+  function screenToGrid(localX, localY) {
+    // The overlay draws each grid cell as state.tileSize screen pixels.
+    const gx = Math.floor((localX - state.pos.x) / state.tileSize);
+    const gy = Math.floor((localY - state.pos.y) / state.tileSize);
+    return { gx, gy };
+  }
+
+  function gridToScreen(gx, gy) {
+    return {
+      x: state.pos.x + gx * state.tileSize,
+      y: state.pos.y + gy * state.tileSize
+    };
+  }
+
+  /* ---------------------------------------------------------------------------
+     IMAGE PROCESSING
+  --------------------------------------------------------------------------- */
+  async function processUploadedImage(dataUrl, targetW = 0, targetH = 0) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        state.image = img;
+        // default target grid is natural size unless user provided targetW/H
+        const tw = targetW > 0 ? targetW : img.naturalWidth;
+        const th = targetH > 0 ? targetH : img.naturalHeight;
+
+        // pixelate nearest-neighbor
+        const idata = Utils.pixelateImageToGrid(img, tw, th);
+        // build pixels array
+        const pixels = [];
+        const d = idata.data;
+        for (let y=0;y<th;y++){
+          for (let x=0;x<tw;x++){
+            const idx = (y*tw + x)*4;
+            const r = d[idx], g = d[idx+1], b = d[idx+2], a = d[idx+3];
+            if (a < CONFIG.TRANSPARENCY_THRESHOLD) continue;
+            if (r>=CONFIG.WHITE_THRESHOLD && g>=CONFIG.WHITE_THRESHOLD && b>=CONFIG.WHITE_THRESHOLD) continue;
+            const palId = findClosestColorId([r,g,b]);
+            let palName = null;
+            const palEntry = state.palette && state.palette.length ? (state.palette.find(p => p.id === palId) || null) : null;
+            palName = palEntry ? palEntry.name : `id-${palId}`;
+            pixels.push({ x, y, r, g, b, paletteId: palId, paletteName: palName, done: false });
+          }
+        }
+        state.pixels = pixels;
+        state.gridW = tw;
+        state.gridH = th;
+        state.imageSrcUrl = dataUrl;
+        state.imageLoaded = true;
+        Utils.saveLocal();
+        drawOverlay();
+        resolve({tw,th,pixels: pixels.length});
+      };
+      img.onerror = (e) => reject(e);
+      img.src = dataUrl;
+    });
+  }
+
+  /* ---------------------------------------------------------------------------
+     DRAWING
+  --------------------------------------------------------------------------- */
   function drawOverlay() {
-    if (!state.overlayCtx) return;
+    if (!state.overlayCtx || !state.overlayCanvas) return;
     const ctx = state.overlayCtx;
-    ctx.clearRect(0, 0, state.overlayCanvas.width, state.overlayCanvas.height);
+    // clear full canvas
+    const c = state.overlayCanvas;
+    ctx.clearRect(0,0,c.width, c.height);
 
     if (!state.imageLoaded) {
-      // if no image, optionally show bounding box if grid dims exist
+      // draw only bounding box if dims available
       if (state.gridW && state.gridH) {
-        ctx.strokeStyle = 'rgba(255,255,255,0.04)';
-        ctx.lineWidth = 1;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+        ctx.lineWidth = 2;
         ctx.strokeRect(state.pos.x - 2, state.pos.y - 2, state.gridW * state.tileSize + 4, state.gridH * state.tileSize + 4);
+        ctx.restore();
       }
       return;
     }
 
-    let doneCount = 0;
+    // draw each pixel as rectangle (not individual images) so it scales with map when appended to transformed container
     for (const p of state.pixels) {
       const sx = Math.round(state.pos.x + p.x * state.tileSize);
       const sy = Math.round(state.pos.y + p.y * state.tileSize);
       if (!p.done) {
-        ctx.fillStyle = `rgba(${p.r},${p.g},${p.b},${state.editMode ? 0.96 : 0.66})`;
+        ctx.fillStyle = `rgba(${p.r},${p.g},${p.b},${state.editMode ? 0.95 : 0.6})`;
         ctx.fillRect(sx, sy, state.tileSize, state.tileSize);
       } else {
-        // clear done cells so site shows through
+        // optionally mark done by clearing (so map content shows) or draw a faint check
         ctx.clearRect(sx, sy, state.tileSize, state.tileSize);
-        doneCount++;
       }
       if (state.gridVisible) {
         ctx.strokeStyle = 'rgba(0,0,0,0.25)';
@@ -542,197 +482,433 @@
       }
     }
 
-    // outline around overlay
+    // outline
+    ctx.save();
     ctx.strokeStyle = 'rgba(255,255,255,0.06)';
     ctx.lineWidth = 2;
     ctx.strokeRect(state.pos.x - 2, state.pos.y - 2, state.gridW * state.tileSize + 4, state.gridH * state.tileSize + 4);
+    ctx.restore();
 
-    // update progress numeric in UI
-    updateProgressUI();
+    // update progress UI
+    updateStatsUI();
   }
 
-  // -------------------------
-  // HOVER & CLICK
-  // -------------------------
-  const hoverTip = document.createElement('div');
-  hoverTip.style.cssText = 'position:fixed;z-index:100003;padding:6px 8px;background:rgba(7,10,15,0.9);color:#fff;border-radius:6px;font-size:12px;display:none;pointer-events:none;';
-  document.body.appendChild(hoverTip);
-
-  function handleHover(gridX, gridY, clientX, clientY) {
-    const p = state.pixels.find(px => px.x === gridX && px.y === gridY && !px.done);
-    if (p) {
-      hoverTip.style.left = (clientX + 12) + 'px';
-      hoverTip.style.top = (clientY + 12) + 'px';
-      hoverTip.textContent = `${p.paletteName} (id ${p.paletteId})`;
-      hoverTip.style.display = 'block';
-    } else {
-      hoverTip.style.display = 'none';
+  /* ---------------------------------------------------------------------------
+     PIXEL INTERACTIONS
+  --------------------------------------------------------------------------- */
+  function handlePixelClick(gx, gy, ev) {
+    // find pixel
+    const p = state.pixels.find(x => x.x === gx && x.y === gy);
+    if (!p) {
+      Utils.showTip('No paintable pixel here', 800);
+      return;
     }
-  }
-
-  function handlePixelClickAt(gridX, gridY, ev) {
-    const p = state.pixels.find(px => px.x === gridX && px.y === gridY);
-    if (!p) { showTip('No paintable pixel here', 800); return; }
-    // attempt to click color button on page
+    // attempt click on palette button in page
     try {
-      // first try using id-style buttons (#color-<id>)
+      // prefer #color-<id>
       let btn = document.querySelector(`#color-${p.paletteId}`);
-      if (!btn) {
-        // fallback: search elements with attribute aria-label or title matching palette name (case-insensitive)
-        const name = p.paletteName && p.paletteName.toLowerCase();
+      if (!btn && state.palette && state.palette.length) {
+        // try lookup by name (aria-label/title)
+        const name = (p.paletteName || '').toLowerCase();
         if (name) {
           const candidates = Array.from(document.querySelectorAll('button,div,span'));
           btn = candidates.find(el => {
-            const a = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title') || '')).toLowerCase();
-            return a.includes(name);
+            const al = ((el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || '').toLowerCase();
+            return al && al.includes(name);
           });
         }
       }
       if (btn) {
-        // dispatch click
         btn.click();
       } else {
-        showTip('Palette button not detected. Try opening the palette UI in the site so the script can detect it.', 1700);
+        Utils.showTip('Palette button not detected. Open palette in site then press Detect Palette.', 2000);
       }
     } catch (e) {
-      console.warn('click color error', e);
+      console.warn('click error', e);
     }
-    // mark done
+    // mark done and persist
     p.done = true;
     Utils.saveLocal();
     drawOverlay();
-    updateProgressUI();
   }
 
-  // -------------------------
-  // PROGRESS UI
-  // -------------------------
-  function updateProgressUI() {
-    const total = state.pixels.length;
-    const done = state.pixels.filter(p => p.done).length;
-    const pct = total ? Math.round((done / total) * 100) : 0;
-    const bar = document.querySelector('#wpo-progress-bar > div');
-    if (bar) bar.style.width = pct + '%';
-    const txt = document.getElementById('wpo-progress-text');
-    if (txt) txt.textContent = `${done} / ${total} (${pct}%)`;
+  /* ---------------------------------------------------------------------------
+     DRAGGING THE OVERLAY (grab the image)
+  --------------------------------------------------------------------------- */
+  let _dragState = { dragging:false, startClient:{x:0,y:0}, startPos:{x:0,y:0} };
+
+  function startOverlayDrag(ev) {
+    if (state.locked) return;
+    _dragState.dragging = true;
+    _dragState.startClient = { x: ev.clientX, y: ev.clientY };
+    _dragState.startPos = { x: state.pos.x, y: state.pos.y };
+    // allow canvas to capture events while dragging
+    state.overlayCanvas.style.pointerEvents = 'auto';
+    // capture mouse
+    window.addEventListener('mousemove', overlayDragMove);
+    window.addEventListener('mouseup', overlayDragEnd);
   }
 
-  // -------------------------
-  // MOVE OVERLAY VIA PANEL
-  // -------------------------
-  function startOverlayMove(e) {
-    // user clicked Move Overlay button
-    let active = true;
-    const offset = { x: e.clientX - state.pos.x, y: e.clientY - state.pos.y };
-    function moveHandler(ev) {
-      if (!active || state.locked) return;
-      state.pos.x = ev.clientX - offset.x;
-      state.pos.y = ev.clientY - offset.y;
+  function overlayDragMove(ev) {
+    if (!_dragState.dragging) return;
+    const dx = ev.clientX - _dragState.startClient.x;
+    const dy = ev.clientY - _dragState.startClient.y;
+    state.pos.x = _dragState.startPos.x + dx;
+    state.pos.y = _dragState.startPos.y + dy;
+    Utils.saveLocal();
+    drawOverlay();
+  }
+
+  function overlayDragEnd(ev) {
+    _dragState.dragging = false;
+    state.overlayCanvas.style.pointerEvents = state.editMode ? 'auto' : 'none';
+    window.removeEventListener('mousemove', overlayDragMove);
+    window.removeEventListener('mouseup', overlayDragEnd);
+  }
+
+  function onPointerMove(ev) {
+    if (!state.editMode) return;
+    // show hover tip
+    const loc = getLocalCoords(ev.clientX, ev.clientY);
+    const g = screenToGrid(loc.x, loc.y);
+    handleHover(g.gx, g.gy, ev.clientX, ev.clientY);
+  }
+
+  function onPointerUp(ev) {
+    // ensure drag state cleaned
+    if (_dragState.dragging) overlayDragEnd(ev);
+  }
+
+  function handleHover(gx, gy, clientX, clientY) {
+    const elt = document.getElementById('wpa-hover');
+    if (!elt) return;
+    const p = state.pixels.find(px => px.x === gx && px.y === gy && !px.done);
+    if (p) {
+      elt.style.left = (clientX + 12) + 'px';
+      elt.style.top = (clientY + 12) + 'px';
+      elt.textContent = `${p.paletteName || 'color-'+p.paletteId} (id ${p.paletteId})`;
+      elt.style.display = 'block';
+    } else elt.style.display = 'none';
+  }
+
+  /* ---------------------------------------------------------------------------
+     UI BUILD: panel, resize modal, progress etc. (I reused & improved your original UI)
+  --------------------------------------------------------------------------- */
+  function createUI() {
+    // remove existing if present
+    const existing = document.getElementById('wpa-panel');
+    if (existing) existing.remove();
+
+    // font-awesome for icons (use CDN)
+    const fa = document.createElement('link');
+    fa.rel = 'stylesheet';
+    fa.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css';
+    document.head.appendChild(fa);
+
+    // inject styles
+    const style = document.createElement('style');
+    style.textContent = `
+      #wpa-panel {
+        position: fixed; right: 18px; top: 18px; width: 300px; z-index: 1000000;
+        background: linear-gradient(180deg, ${CONFIG.THEME.panel}, ${CONFIG.THEME.primary});
+        color: ${CONFIG.THEME.text}; border-radius: 10px; padding: 12px;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.6); font-family: Inter, Roboto, sans-serif;
+        border: 1px solid rgba(255,255,255,0.04);
+      }
+      #wpa-panel h3 { margin:0 0 8px 0; color:${CONFIG.THEME.accent}; font-size:15px; display:flex; gap:8px; align-items:center; }
+      .wpa-row { display:flex; gap:8px; margin-bottom:8px; align-items:center; }
+      .wpa-btn { flex:1; padding:8px 10px; border-radius:8px; border:none; cursor:pointer; background:rgba(255,255,255,0.03); color:${CONFIG.THEME.text}; font-weight:600; }
+      .wpa-btn.primary { background: linear-gradient(90deg, ${CONFIG.THEME.accent}, #4c1d95); color: white; }
+      .wpa-btn.small { padding:6px 8px; font-size:12px; border-radius:6px; }
+      .wpa-label { font-size:12px; color:${CONFIG.THEME.subtext}; }
+      .wpa-input { width:82px; padding:6px; border-radius:8px; background:rgba(255,255,255,0.02); color:${CONFIG.THEME.text}; border:1px solid rgba(255,255,255,0.03); }
+      #wpa-progress { height:10px; background: rgba(255,255,255,0.06); border-radius:999px; overflow:hidden; margin-top:6px; }
+      #wpa-progress > div { height:100%; background: linear-gradient(90deg, ${CONFIG.THEME.accent}, #a78bfa); width:0%; }
+      #wpa-tip { position: fixed; left: 50%; transform: translateX(-50%); top: 60px; background: rgba(0,0,0,0.75); color:#fff; padding:8px 12px; border-radius:6px; z-index:1000010; display:none; font-size:13px; }
+      #wpa-hover { position: fixed; z-index: 1000020; padding:6px 8px; border-radius:6px; background: rgba(0,0,0,0.85); color:#fff; display:none; pointer-events:none; font-size:12px;}
+    `;
+    document.head.appendChild(style);
+
+    // panel markup
+    const panel = document.createElement('div');
+    panel.id = 'wpa-panel';
+    panel.innerHTML = `
+      <h3><i class="fas fa-image"></i> ${Utils.t('title')}</h3>
+
+      <div class="wpa-row">
+        <button id="wpa-init" class="wpa-btn primary"><i class="fas fa-rocket"></i> Init</button>
+      </div>
+
+      <div class="wpa-row">
+        <button id="wpa-upload" class="wpa-btn"><i class="fas fa-upload"></i> ${Utils.t('uploadImage')}</button>
+        <button id="wpa-detect" class="wpa-btn small"><i class="fas fa-palette"></i> Detect Palette</button>
+      </div>
+
+      <div class="wpa-row">
+        <div style="flex:1">
+          <div class="wpa-label">Grid size (W × H)</div>
+          <div style="display:flex;gap:6px;margin-top:6px">
+            <input id="wpa-gridW" class="wpa-input" type="number" min="1" value="${state.gridW}" placeholder="W"/>
+            <input id="wpa-gridH" class="wpa-input" type="number" min="1" value="${state.gridH}" placeholder="H"/>
+            <button id="wpa-autoset" class="wpa-btn small">Auto</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="wpa-row">
+        <div style="flex:1">
+          <div class="wpa-label">Tile size (screen px)</div>
+          <input id="wpa-tileSize" class="wpa-input" type="number" min="1" value="${state.tileSize}">
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <button id="wpa-edit" class="wpa-btn small">Edit Mode</button>
+          <button id="wpa-lock" class="wpa-btn small">Lock</button>
+        </div>
+      </div>
+
+      <div class="wpa-row">
+        <button id="wpa-gridToggle" class="wpa-btn small">Grid: ${state.gridVisible ? 'On' : 'Off'}</button>
+        <button id="wpa-reset" class="wpa-btn small">Reset</button>
+      </div>
+
+      <div>
+        <div class="wpa-label">Progress</div>
+        <div id="wpa-progress"><div style="width:0%"></div></div>
+        <div id="wpa-progressText" class="wpa-label" style="margin-top:6px">0 / 0</div>
+      </div>
+
+      <div style="margin-top:8px" class="wpa-row">
+        <button id="wpa-move" class="wpa-btn small">Move Overlay</button>
+        <button id="wpa-help" class="wpa-btn small">Help</button>
+      </div>
+    `;
+    document.body.appendChild(panel);
+
+    // tip & hover elements
+    const tip = document.createElement('div'); tip.id = 'wpa-tip'; document.body.appendChild(tip);
+    const hover = document.createElement('div'); hover.id = 'wpa-hover'; document.body.appendChild(hover);
+
+    // hook events
+    document.getElementById('wpa-init').addEventListener('click', async () => {
+      Utils.showTip(Utils.t('checkingColors'));
+      await detectPalette(true);
+      Utils.showTip(Utils.t('initMessage'), 1400);
+    });
+
+    document.getElementById('wpa-upload').addEventListener('click', async () => {
+      try {
+        const dataUrl = await Utils.createImageUploader();
+        // get inputs for grid size if present
+        const gw = parseInt(document.getElementById('wpa-gridW').value) || 0;
+        const gh = parseInt(document.getElementById('wpa-gridH').value) || 0;
+        await processUploadedImage(dataUrl, gw, gh);
+        // if grid dims were zero, save the auto-set dims into inputs
+        document.getElementById('wpa-gridW').value = state.gridW;
+        document.getElementById('wpa-gridH').value = state.gridH;
+        Utils.showTip(Utils.t('imageLoaded', {count: state.pixels.length}), 1600);
+      } catch(e) {
+        console.warn(e);
+        Utils.showTip(Utils.t('imageError'), 1400);
+      }
+    });
+
+    document.getElementById('wpa-detect').addEventListener('click', () => detectPalette(true));
+
+    document.getElementById('wpa-autoset').addEventListener('click', () => {
+      if (!state.image) { Utils.showTip('Upload first'); return; }
+      document.getElementById('wpa-gridW').value = state.image.naturalWidth;
+      document.getElementById('wpa-gridH').value = state.image.naturalHeight;
+    });
+
+    document.getElementById('wpa-tileSize').addEventListener('change', (e) => {
+      const v = Math.max(1, parseInt(e.target.value)||4);
+      state.tileSize = v;
+      Utils.saveLocal();
+      drawOverlay();
+    });
+
+    document.getElementById('wpa-edit').addEventListener('click', () => {
+      state.editMode = !state.editMode;
+      updateUI();
+    });
+
+    document.getElementById('wpa-lock').addEventListener('click', () => {
+      state.locked = !state.locked;
+      updateUI();
+      Utils.saveLocal();
+    });
+
+    document.getElementById('wpa-gridToggle').addEventListener('click', () => {
+      state.gridVisible = !state.gridVisible;
+      updateUI();
+      drawOverlay();
+      Utils.saveLocal();
+    });
+
+    document.getElementById('wpa-reset').addEventListener('click', () => {
+      if (!confirm('Reset progress? This will mark all pixels undone.')) return;
+      state.pixels.forEach(p => p.done = false);
+      Utils.saveLocal();
+      drawOverlay();
+      updateStatsUI();
+    });
+
+    document.getElementById('wpa-move').addEventListener('mousedown', (e) => {
+      // clicking Move Overlay -> initiate overlay drag via mouse move across window
+      if (state.locked) { Utils.showTip('Overlay locked'); return; }
+      startOverlayMoveFromButton(e);
+    });
+
+    document.getElementById('wpa-help').addEventListener('click', () => {
+      alert([
+        'WPlace Overlay Help',
+        '- Upload an image (pixel art recommended).',
+        '- Set grid size (or press Auto).',
+        `- Tile size = on-screen px per WPlace pixel (try 4).`,
+        '- Toggle Edit Mode to interact with overlay (E key toggles too).',
+        '- Click a pixel in Edit Mode to select the color in the site palette and mark it done.',
+        '- Drag the overlay by clicking the image (or use Move Overlay button).',
+        '- Ensure palette UI is open on the site and press Detect Palette.'
+      ].join('\n'));
+    });
+
+    // also allow pressing Enter after changing grid inputs to reprocess
+    document.getElementById('wpa-gridW').addEventListener('change', () => {
+      const gw = parseInt(document.getElementById('wpa-gridW').value) || 0;
+      const gh = parseInt(document.getElementById('wpa-gridH').value) || 0;
+      if (state.image) {
+        processUploadedImage(state.image.src, gw, gh).catch(e=>console.warn(e));
+      }
+    });
+    document.getElementById('wpa-gridH').addEventListener('change', () => {
+      const gw = parseInt(document.getElementById('wpa-gridW').value) || 0;
+      const gh = parseInt(document.getElementById('wpa-gridH').value) || 0;
+      if (state.image) {
+        processUploadedImage(state.image.src, gw, gh).catch(e=>console.warn(e));
+      }
+    });
+
+    updateUI();
+  }
+
+  function updateUI() {
+    // reflect state into UI
+    const editBtn = document.getElementById('wpa-edit');
+    const lockBtn = document.getElementById('wpa-lock');
+    const gridBtn = document.getElementById('wpa-gridToggle');
+    const tileInp = document.getElementById('wpa-tileSize');
+    if (editBtn) editBtn.textContent = state.editMode ? 'Edit: On' : 'Edit Mode';
+    if (lockBtn) lockBtn.textContent = state.locked ? 'Locked' : 'Lock';
+    if (gridBtn) gridBtn.textContent = `Grid: ${state.gridVisible ? 'On' : 'Off'}`;
+    if (tileInp) tileInp.value = state.tileSize;
+    // set overlay pointer events
+    if (state.overlayCanvas) state.overlayCanvas.style.pointerEvents = state.editMode ? 'auto' : 'none';
+  }
+
+  /* ---------------------------------------------------------------------------
+     START OVERLAY MOVE (from UI button)
+  --------------------------------------------------------------------------- */
+  function startOverlayMoveFromButton(e) {
+    const startClient = { x: e.clientX, y: e.clientY };
+    const startPos = { x: state.pos.x, y: state.pos.y };
+    function onMove(ev) {
+      state.pos.x = startPos.x + (ev.clientX - startClient.x);
+      state.pos.y = startPos.y + (ev.clientY - startClient.y);
       Utils.saveLocal();
       drawOverlay();
     }
-    function upHandler() {
-      active = false;
-      window.removeEventListener('mousemove', moveHandler);
-      window.removeEventListener('mouseup', upHandler);
-      Utils.saveLocal();
+    function onUp() {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      Utils.saveTip && Utils.saveTip('Moved');
     }
-    window.addEventListener('mousemove', moveHandler);
-    window.addEventListener('mouseup', upHandler);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
   }
 
-  // -------------------------
-  // PANEL UI STATE
-  // -------------------------
-  function updateEditUI() {
-    const knob = document.getElementById('wpo-toggle-knob');
-    const box = document.getElementById('wpo-toggle-box');
-    if (!knob || !box || !state.overlayCanvas) return;
-    if (state.editMode) {
-      knob.style.transform = 'translateX(16px)';
-      box.classList.add('wpo-toggle-on');
-      state.overlayCanvas.style.pointerEvents = 'auto';
-      state.overlayCanvas.style.cursor = state.locked ? 'default' : 'crosshair';
-      document.getElementById('wpo-edit').textContent = 'Edit: On';
-    } else {
-      knob.style.transform = 'translateX(0)';
-      box.classList.remove('wpo-toggle-on');
-      state.overlayCanvas.style.pointerEvents = 'none';
-      document.getElementById('wpo-edit').textContent = 'Edit Mode';
-      hoverTip.style.display = 'none';
-    }
-    document.getElementById('wpo-scale').value = state.tileSize;
-    document.getElementById('wpo-grid-toggle').textContent = `Grid: ${state.gridVisible ? 'On' : 'Off'}`;
-    document.getElementById('wpo-lock').textContent = state.locked ? 'Locked' : 'Lock';
+  /* ---------------------------------------------------------------------------
+     SAVE / LOAD / STATS UI
+  --------------------------------------------------------------------------- */
+  function updateStatsUI() {
+    const total = state.pixels.length;
+    const done = state.pixels.filter(p => p.done).length;
+    const pct = total ? Math.round((done/total)*100) : 0;
+    const bar = document.querySelector('#wpa-progress > div');
+    if (bar) bar.style.width = pct + '%';
+    const txt = document.getElementById('wpa-progressText');
+    if (txt) txt.textContent = `${done} / ${total} (${pct}%)`;
   }
 
-  // -------------------------
-  // RESTORE FLAGS AFTER BUILD (helper)
-  // -------------------------
-  function restoreFlagsIfPossible(parsedSaved) {
-    if (!parsedSaved || !Array.isArray(parsedSaved.pixelsDone)) return;
-    if (parsedSaved.pixelsDone.length === state.pixels.length) {
-      for (let i = 0; i < state.pixels.length; i++) state.pixels[i].done = !!parsedSaved.pixelsDone[i];
+  /* ---------------------------------------------------------------------------
+     RESTORE SAVED STATE (when possible)
+     - we restore pos, tileSize, gridVisible, locked & done flags if pixel counts match
+  --------------------------------------------------------------------------- */
+  function tryRestoreSaved() {
+    const raw = Utils.loadLocal();
+    if (!raw) return;
+    if (typeof raw.tileSize === 'number') state.tileSize = raw.tileSize;
+    if (raw.pos) state.pos = raw.pos;
+    if (typeof raw.gridVisible === 'boolean') state.gridVisible = raw.gridVisible;
+    if (typeof raw.locked === 'boolean') state.locked = raw.locked;
+    if (Array.isArray(raw.pixelsDone) && state.pixels.length === raw.pixelsDone.length) {
+      for (let i=0;i<state.pixels.length;i++) state.pixels[i].done = !!raw.pixelsDone[i];
     }
   }
 
-  // -------------------------
-  // RESET
-  // -------------------------
-  function resetProgress() {
-    state.pixels.forEach(p => p.done = false);
-    Utils.saveLocal();
-    drawOverlay();
-    updateProgressUI();
-    showTip('Progress reset');
+  /* ---------------------------------------------------------------------------
+     BOOT / INIT
+  --------------------------------------------------------------------------- */
+  function attachKeyboardShortcuts() {
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'e') { state.editMode = !state.editMode; updateUI(); Utils.saveLocal(); drawOverlay(); }
+      if (e.key === 'g') { state.gridVisible = !state.gridVisible; updateUI(); Utils.saveLocal(); drawOverlay(); }
+      if (e.key === 'Escape') { state.editMode = false; updateUI(); drawOverlay(); }
+    });
   }
 
-  // -------------------------
-  // BOOTSTRAP / INIT
-  // -------------------------
+  // Initialize everything
   function init() {
-    buildPanel();
-    createOverlayCanvas();
-    // try load saved config
-    const parsedSaved = Utils.loadLocal();
-    if (parsedSaved) {
-      // store parsed but pixels will be restored after user re-uploads (we can't reconstruct image blob automatically)
-      // but we can restore pos/tileSize/grid settings.
-      // if lastImageSrc exists we keep it as reference, but user must re-upload to rebuild the grid visually.
-      console.debug('Loaded saved state', parsedSaved);
+    createOverlayCanvas();   // attach overlay to map container
+    createUI();              // build UI
+    // attempt palette detection immediately
+    detectPalette(true).catch(e=>console.warn('palette detect', e));
+    attachKeyboardShortcuts();
+    // try load previously saved settings (pos/tileSize) for convenience
+    const saved = Utils.loadLocal();
+    if (saved) {
+      if (saved.pos) state.pos = saved.pos;
+      if (saved.tileSize) state.tileSize = saved.tileSize;
+      if (typeof saved.gridVisible === 'boolean') state.gridVisible = saved.gridVisible;
+      if (typeof saved.locked === 'boolean') state.locked = saved.locked;
     }
-    // update UI to reflect loaded state
-    updateEditUI();
+    // draw first frame
     drawOverlay();
-    updateProgressUI();
-    showTip('WPlace Overlay loaded — click Upload', 1500);
+    Utils.showTip('WPlace Overlay loaded — Upload an image and Detect Palette', 2200);
   }
 
-  // -------------------------
-  // HELPERS exposed
-  // -------------------------
-  window.WPO = {
-    state,
-    drawOverlay,
-    save: Utils.saveLocal,
-    load: Utils.loadLocal,
-    reset: resetProgress,
-    detectPaletteNow
-  };
-
-  // keyboard shortcuts
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'e') { state.editMode = !state.editMode; updateEditUI(); Utils.saveLocal(); }
-    if (e.key === 'g') { state.gridVisible = !state.gridVisible; drawOverlay(); Utils.saveLocal(); }
-  });
-
-  // finally run init
+  // run init
   init();
 
-  // Periodically attempt palette detection in background if not detected
-  const autoDetectTimer = setInterval(() => {
-    if (!state.paletteDetected) detectPaletteNow();
-    else clearInterval(autoDetectTimer);
-  }, 3000);
+  // Expose WPO object on window for debugging
+  window.WPA = {
+    state,
+    drawOverlay,
+    detectPalette,
+    processUploadedImage,
+    saveState: Utils.saveLocal,
+    loadState: Utils.loadLocal,
+    clear: () => {
+      state.pixels = [];
+      state.image = null;
+      state.imageSrcUrl = null;
+      state.gridW = 0; state.gridH = 0; state.imageLoaded = false;
+      Utils.saveLocal();
+      drawOverlay();
+      updateStatsUI();
+    }
+  };
 
+  /* ---------------------------------------------------------------------------
+     End of script
+  --------------------------------------------------------------------------- */
 })();
